@@ -7,36 +7,70 @@
 //    完全靜態，丟 GitHub Pages 就能用，零後端
 // ─────────────────────────────────────────────────────────────
 
-let capture;   // 裝置鏡頭
+let capture;   // 裝置鏡頭 或 fallback 影片
 let pulseT = 0;
 let camReady = false;
 
 // Hybrid Camera additions
-let mode = "0";      // 0: 原色鏡像, 1: 彩色方塊, 2: 灰階方塊, 3: 文字雲
-let span = 15;       // 像素採樣間距
+let mode = "0";      // 0: 原色鏡像, 1: 彩色方塊, 2: 灰階馬賽克(20x20), 3: 文字雲
+let span = 15;       // 像素採樣間距（模式1/3 使用）
 let noiseTexture;
 let txt = "一二三四五田雷電龕龘";
 
-function setup() {
+let bubbles = [];
+const BUBBLE_COUNT = 24;
+let lastBox = null; // 儲存目前畫面中鏡頭盒位置，給 snapshot 與按鈕定位用
+
+async function setup() {
   createCanvas(windowWidth, windowHeight);
   frameRate(60);
   textFont('serif');
 
-  // 取得當前裝置的鏡頭（電腦就電腦鏡頭，手機就手機鏡頭）
-  capture = createCapture(VIDEO, () => {
-    camReady = true;
-  });
-  capture.size(640, 480); // 固定擷取解析度以維持效能
-  capture.hide(); // 隱藏 DOM 元素，改在 canvas 上自行繪製
+  // 先偵測是否有可用的攝影機裝置，若沒有就載入 fallback 影片檔
+  const hasCamera = await checkHasCamera();
+
+  if (hasCamera) {
+    capture = createCapture(VIDEO, () => { camReady = true; });
+    capture.size(640, 480);
+    capture.hide();
+  } else {
+    // fallback 影片 - 使用正確的路徑與播放邏輯
+    capture = createVideo('14204294_1920_1080_25fps.mp4');
+    capture.size(640, 480);
+    capture.hide();
+    
+    // 延遲確保影片已加載
+    capture.onended(() => capture.play()); // 循環播放
+    
+    // 等待影片可以播放後設定 camReady
+    capture.elt.oncanplay = () => {
+      if (!camReady) {
+        capture.elt.play().catch(err => console.log('自動播放被阻擋:', err));
+        camReady = true;
+      }
+    };
+    
+    // 主動觸發播放
+    setTimeout(() => {
+      try {
+        capture.play();
+      } catch (e) {
+        console.log('播放失敗:', e);
+      }
+    }, 500);
+  }
 
   // 產生雜訊材質
   noiseTexture = createGraphics(windowWidth, windowHeight);
   generateNoiseTexture();
 
-  // 建立分享按鈕 + Modal 行為
+  // 建立分享按鈕 + Modal 行為 + snapshot 按鈕
   initInterface();
 
-  // Modal 關閉事件（initInterface 也會設，但保留這裡以確保存在）
+  // 產生泡泡
+  generateBubbles();
+
+  // Modal 關閉事件
   const closeBtn = document.getElementById('close-modal');
   if (closeBtn) closeBtn.onclick = closeModal;
   const modalEl = document.getElementById('qr-modal');
@@ -51,15 +85,33 @@ function setup() {
   });
 }
 
+async function checkHasCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return false;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.some(d => d.kind === 'videoinput');
+  } catch (e) {
+    return false;
+  }
+}
+
 // ── Draw ───────────────────────────────────────────────────────
 function draw() {
   background('#297BB2');
   pulseT += 0.035;
 
   if (!camReady) {
-    // 等待鏡頭啟動
     drawWaiting();
     return;
+  }
+
+  // 確保影片持續播放
+  if (capture.elt && capture.elt.paused) {
+    try {
+      capture.play();
+    } catch (e) {
+      // 靜默處理
+    }
   }
 
   // 自動根據螢幕大小計算顯示區塊
@@ -68,11 +120,23 @@ function draw() {
   const BOX_X = (width  - BOX_W) / 2;
   const BOX_Y = (height - BOX_H) / 2;
 
-  const vw = capture.elt.videoWidth  || 640;
-  const vh = capture.elt.videoHeight || 480;
+  const vw = capture.elt && capture.elt.videoWidth  ? capture.elt.videoWidth  : 640;
+  const vh = capture.elt && capture.elt.videoHeight ? capture.elt.videoHeight : 480;
   const { x, y, w, h } = fitKeepRatio(vw, vh, BOX_W, BOX_H, BOX_X, BOX_Y);
 
-  // 滑鼠 X 軸控制 span 大小
+  // 儲存給按鈕與 snapshot 使用（取整數）
+  lastBox = { x: int(x), y: int(y), w: int(w), h: int(h) };
+
+  // 將 snapshot 按鈕定位在畫面外（右側）
+  const saveBtn = document.getElementById('save-btn');
+  if (saveBtn && lastBox) {
+    saveBtn.style.position = 'absolute';
+    saveBtn.style.left = (lastBox.x + lastBox.w + 12) + 'px';
+    saveBtn.style.top  = (lastBox.y) + 'px';
+    saveBtn.style.zIndex = 9999;
+  }
+
+  // 滑鼠 X 軸控制 span 大小（影響某些模式）
   span = int(map(mouseX, 0, width, 8, 40));
 
   // 外光暈
@@ -80,16 +144,19 @@ function draw() {
 
   // 核心渲染：鏡像或像素化處理
   if (mode === "0") {
-    // 模式 0：原始鏡像 (原本程式)
+    // 模式 0：原始鏡像
     push();
       translate(x + w, y);
       scale(-1, 1);
       image(capture, 0, 0, w, h);
     pop();
   } else {
-    // 模式 1/2/3：像素處理
+    // 模式 1/2/3：像素處理（mode 2 為 20x20 馬賽克灰階）
     renderPixelArt(x, y, w, h);
   }
+
+  // 鏡頭框內的泡泡效果（疊在畫面上）
+  drawBubbles(x, y, w, h);
 
   // 疊加雜訊質感
   push();
@@ -126,12 +193,106 @@ function drawGlow(x, y, w, h) {
   }
 }
 
+// ── 泡泡效果 ───────────────────────────────────────────────────
+function generateBubbles() {
+  bubbles = [];
+  for (let i = 0; i < BUBBLE_COUNT; i++) {
+    bubbles.push({
+      x: random(0, 1),       // relative 0..1 inside box
+      y: random(0, 1),       // relative 0..1 inside box
+      r: random(6, 28),
+      vy: random(0.2, 1.2),
+      alpha: random(30, 100),
+      wobble: random(0.2, 1.2),
+      wobbleOffset: random(TWO_PI)
+    });
+  }
+}
+
+function drawBubbles(boxX, boxY, boxW, boxH) {
+  push();
+  noStroke();
+  
+  for (let b of bubbles) {
+    // update position
+    b.y -= b.vy * 0.01; // 簡化更新速度
+    b.x += sin(pulseT * b.wobble + b.wobbleOffset) * 0.003; // 改進搖晃邏輯
+
+    // wrap around - 重新出現在上方
+    if (b.y < -0.2) {
+      b.y = 1.2;
+      b.x = random(0, 1);
+      b.r = random(6, 28);
+      b.vy = random(0.2, 1.2);
+      b.alpha = random(30, 100);
+      b.wobbleOffset = random(TWO_PI);
+    }
+
+    // constrain x 在框內
+    b.x = constrain(b.x, -0.1, 1.1);
+
+    // draw bubble
+    const px = boxX + b.x * boxW;
+    const py = boxY + b.y * boxH;
+    
+    fill(255, 255, 255, b.alpha);
+    ellipse(px, py, b.r, b.r);
+  }
+  pop();
+}
+
 // ── 像素處理核心 ──────────────────────────────────────────────
 function renderPixelArt(targetX, targetY, targetW, targetH) {
   capture.loadPixels();
   if (!capture.pixels || capture.pixels.length === 0) return;
 
-  // 計算縮放比例，將原本的攝像頭像素映射到畫布的目標區域
+  // 若為模式 2，採用 20x20 的馬賽克灰階（依顯示區域切分）
+  if (mode === "2") {
+    const COLS = 20;
+    const ROWS = 20;
+    const cellW_src = capture.width / COLS;
+    const cellH_src = capture.height / ROWS;
+    const cellW_draw = targetW / COLS;
+    const cellH_draw = targetH / ROWS;
+
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        // 計算該 cell 在 source 視訊像素上的範圍（整數）
+        const sx = floor(col * cellW_src);
+        const sy = floor(row * cellH_src);
+        const sw = max(1, floor(cellW_src));
+        const sh = max(1, floor(cellH_src));
+
+        // 累計該區域的顏色
+        let rSum = 0, gSum = 0, bSum = 0, cnt = 0;
+        for (let yy = sy; yy < min(sy + sh, capture.height); yy++) {
+          for (let xx = sx; xx < min(sx + sw, capture.width); xx++) {
+            const idx = (xx + yy * capture.width) * 4;
+            rSum += capture.pixels[idx];
+            gSum += capture.pixels[idx + 1];
+            bSum += capture.pixels[idx + 2];
+            cnt++;
+          }
+        }
+        if (cnt === 0) cnt = 1;
+        const rAvg = rSum / cnt;
+        const gAvg = gSum / cnt;
+        const bAvg = bSum / cnt;
+        const gray = (rAvg + gAvg + bAvg) / 3;
+
+        // 計算繪製位置（鏡像效果與原先畫面一致 → 保持 horizontal mirror）
+        const drawX = targetX + (COLS - 1 - col) * cellW_draw;
+        const drawY = targetY + row * cellH_draw;
+
+        noStroke();
+        fill(gray);
+        rect(drawX, drawY, cellW_draw + 1, cellH_draw + 1); // +1 防止間隙
+      }
+    }
+    return;
+  }
+
+  // 其餘模式維持原本像素化邏輯（mode 1 與 3）
   let scaleX = targetW / capture.width;
   let scaleY = targetH / capture.height;
 
@@ -160,10 +321,6 @@ function renderPixelArt(targetX, targetY, targetW, targetH) {
         let s = map(bk, 0, 255, 0, drawSpan);
         fill(r, g, b);
         rect(0, 0, s);
-      } else if (mode === "2") {
-        let s = map(bk, 0, 255, 0, drawSpan);
-        fill(bk);
-        rect(0, 0, s * 0.9);
       } else if (mode === "3") {
         let bkId = int(map(bk, 0, 255, txt.length - 1, 0));
         fill(r, g, b);
@@ -257,6 +414,15 @@ function initInterface() {
     document.body.appendChild(btn);
   }
 
+  // 建立 snapshot 按鈕（在視訊框外）
+  if (!document.getElementById('save-btn')) {
+    const sb = document.createElement('button');
+    sb.id = 'save-btn';
+    sb.innerHTML = '📸 儲存鏡頭截圖';
+    sb.onclick = captureSnapshot;
+    document.body.appendChild(sb);
+  }
+
   // 若 HTML 裡有 #close-modal 與 #qr-modal，綁定事件（若無則不會出錯）
   const closeEl = document.getElementById('close-modal');
   if (closeEl) closeEl.onclick = closeModal;
@@ -297,10 +463,19 @@ function closeModal() {
   if (modal) modal.classList.add('hidden');
 }
 
+// ── Snapshot / 儲存截圖 ─────────────────────────────────────────
+function captureSnapshot() {
+  if (!lastBox) return;
+  // 使用 get() 從 canvas 擷取目前鏡頭框的影像，並存為 JPG
+  const img = get(lastBox.x, lastBox.y, lastBox.w, lastBox.h);
+  if (img) save(img, 'snapshot.jpg');
+}
+
 // ── 視窗縮放 ───────────────────────────────────────────────────
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
   // 重新產生雜訊材質以符合新畫布大小
   noiseTexture = createGraphics(windowWidth, windowHeight);
   generateNoiseTexture();
+  generateBubbles();
 }
