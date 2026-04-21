@@ -423,6 +423,66 @@ function initInterface() {
     document.body.appendChild(sb);
   }
 
+  // 建立模式切換按鈕容器
+  if (!document.getElementById('mode-buttons')) {
+    const container = document.createElement('div');
+    container.id = 'mode-buttons';
+    container.style.cssText = `
+      position: fixed;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 8px;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.4);
+      padding: 10px;
+      border-radius: 8px;
+      backdrop-filter: blur(10px);
+    `;
+
+    const modes = [
+      { id: '0', label: '🪞 原色鏡像', desc: 'Mirror' },
+      { id: '1', label: '🟨 彩色方塊', desc: 'Color' },
+      { id: '2', label: '⬛ 灰階馬賽克', desc: 'Mosaic' },
+      { id: '3', label: '✍️ 文字雲', desc: 'Text' }
+    ];
+
+    modes.forEach(m => {
+      const btn = document.createElement('button');
+      btn.id = `mode-btn-${m.id}`;
+      btn.innerHTML = m.label;
+      btn.title = m.desc;
+      btn.style.cssText = `
+        padding: 10px 14px;
+        border: 2px solid #fff;
+        background: rgba(41, 123, 178, 0.6);
+        color: #fff;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: bold;
+        transition: all 0.3s ease;
+        white-space: nowrap;
+      `;
+      btn.onmouseover = () => {
+        btn.style.background = 'rgba(41, 123, 178, 0.9)';
+        btn.style.transform = 'scale(1.05)';
+      };
+      btn.onmouseout = () => {
+        if (mode !== m.id) {
+          btn.style.background = 'rgba(41, 123, 178, 0.6)';
+        }
+        btn.style.transform = 'scale(1)';
+      };
+      btn.onclick = () => switchMode(m.id, container);
+      container.appendChild(btn);
+    });
+
+    document.body.appendChild(container);
+    updateModeButtons(container);
+  }
+
   // 若 HTML 裡有 #close-modal 與 #qr-modal，綁定事件（若無則不會出錯）
   const closeEl = document.getElementById('close-modal');
   if (closeEl) closeEl.onclick = closeModal;
@@ -433,6 +493,31 @@ function initInterface() {
       if (e.target.id === 'qr-modal') closeModal();
     };
   }
+}
+
+// 切換模式函數
+function switchMode(newMode, container) {
+  mode = newMode;
+  updateModeButtons(container);
+}
+
+// 更新按鈕外觀
+function updateModeButtons(container) {
+  const modes = ['0', '1', '2', '3'];
+  modes.forEach(m => {
+    const btn = document.getElementById(`mode-btn-${m}`);
+    if (btn) {
+      if (mode === m) {
+        btn.style.background = 'rgba(255, 215, 0, 0.8)';
+        btn.style.borderColor = '#FFD700';
+        btn.style.transform = 'scale(1.1)';
+      } else {
+        btn.style.background = 'rgba(41, 123, 178, 0.6)';
+        btn.style.borderColor = '#fff';
+        btn.style.transform = 'scale(1)';
+      }
+    }
+  });
 }
 
 function openModal() {
